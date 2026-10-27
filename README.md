@@ -1,5 +1,7 @@
 # Currency Exchange Tracker
 
+[![CI](https://github.com/sanimanqezu/currency-exchange-tracker/actions/workflows/ci.yml/badge.svg)](https://github.com/sanimanqezu/currency-exchange-tracker/actions/workflows/ci.yml)
+
 A production-ready Spring Boot 3 REST API for tracking, converting, and analysing currency exchange rates. Built with clean architecture, Caffeine caching, scheduled data ingestion, and a PostgreSQL-backed history store.
 
 **No API key required.** Rates are sourced from the free [open.er-api.com](https://open.er-api.com) API.
@@ -10,42 +12,62 @@ A production-ready Spring Boot 3 REST API for tracking, converting, and analysin
 
 | Layer | Technology |
 |---|---|
-| Language | Java 17 |
-| Framework | Spring Boot 3.2.5 |
+| Language | Java 25 |
+| Framework | Spring Boot 3.5.16 |
 | Persistence | Spring Data JPA + PostgreSQL |
 | Migrations | Flyway |
 | Caching | Spring Cache + Caffeine (1-hour TTL) |
 | Scheduling | Spring Scheduler |
-| Tests | JUnit 5 + Mockito (H2 in-memory) |
+| HTTP client | RestTemplate (open.er-api.com) |
+| Tests | JUnit 5 + Mockito + AssertJ (H2 in-memory for slice tests) |
 | Container | Docker + Docker Compose |
 | Utilities | Lombok |
+
+---
+
+## Key design points
+
+- **Layered architecture** — controller → service → client/repository, with records as immutable DTOs and a `@RestControllerAdvice` that maps domain exceptions to RFC 7807 `ProblemDetail` responses.
+- **Caching** — rates are cached per base currency with Caffeine (1-hour TTL, 100-entry cap) so repeated reads and conversions avoid redundant upstream calls; `refreshRates` evicts on demand.
+- **Resilient external calls** — the `ExchangeRateClient` wraps all upstream failures in a dedicated `ExternalApiException` that surfaces as `503 Service Unavailable`, keeping transport concerns out of the service layer.
+- **Scheduled history** — an hourly job snapshots USD/EUR/ZAR rates with upsert semantics (one row per pair per day) and isolates failures per base currency so one bad fetch does not abort the run.
+- **Centralized PostgreSQL** — the app joins the shared portfolio Postgres over an external Docker network via `DB_*` environment variables; schema is owned by Flyway and `ddl-auto: validate`.
 
 ---
 
 ## Getting Started
 
 ### Prerequisites
-- Java 17+
-- Maven 3.9+
-- Docker & Docker Compose (for containerised run)
+- Java 25
+- Maven 3.9+ (use the bundled `./mvnw` wrapper)
+- Docker & Docker Compose
 
-### Run with Docker Compose (recommended)
+### 1. Start the centralized PostgreSQL
+
+This app connects to the shared portfolio PostgreSQL instance over the external `portfolio-net` Docker network. Bring it up first from the portfolio root:
 
 ```bash
-docker-compose up --build
+# in the portfolio-root directory
+docker-compose up -d
 ```
 
-This starts PostgreSQL and the Spring Boot app. The API is available at `http://localhost:8080`.
-
-### Run locally (requires PostgreSQL running)
+### 2. Run the app
 
 ```bash
-# Start PostgreSQL separately, then:
 ./mvnw spring-boot:run
 ```
 
-Default datasource: `jdbc:postgresql://localhost:5432/currency_tracker` with username/password `postgres/postgres`.  
-Override via environment variables: `DB_USERNAME`, `DB_PASSWORD`.
+The API is available at `http://localhost:8080`. Connection details are read from environment variables (defaults in brackets):
+
+| Variable | Default |
+|---|---|
+| `DB_HOST` | `localhost` |
+| `DB_PORT` | `5432` |
+| `DB_NAME` | `currency_tracker` |
+| `DB_USERNAME` | `postgres` |
+| `DB_PASSWORD` | `postgres` |
+
+Alternatively, build the image and attach it to the shared network with `docker-compose up --build` (the compose file expects the external `portfolio-net` network to already exist).
 
 ---
 
@@ -175,13 +197,22 @@ Migrations are managed by **Flyway** and run automatically on startup.
 
 ---
 
-## Running Tests
+## Tests
 
 ```bash
 ./mvnw test
 ```
 
-Tests use an **H2 in-memory database** — no PostgreSQL required. Flyway is disabled in the test profile.
+**34 tests**, self-contained — no real database or network access. The external rate API and all collaborators are mocked.
+
+| Layer | Class | What it covers |
+|---|---|---|
+| Service (unit) | `ExchangeRateServiceTest` | rate fetch/persist, currency validation, case normalisation, compare filtering, upstream failure propagation |
+| Service (unit) | `CurrencyConversionServiceTest` | conversion maths, HALF_UP rounding, amount validation, missing-target and upstream-failure cases |
+| Service (unit) | `RateSnapshotServiceTest` | history ordering/validation, snapshot upsert (insert + update), per-currency failure isolation |
+| Controller (slice) | `ExchangeRateControllerTest` | `@WebMvcTest` status codes, request delegation, 400 on bad/missing params, and `GlobalExceptionHandler` mapping domain exceptions to 404/503 |
+
+Unit tests use Mockito + AssertJ; the controller slice test runs against `MockMvc` with `@MockitoBean` services.
 
 ---
 
