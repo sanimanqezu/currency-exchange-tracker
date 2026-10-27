@@ -20,7 +20,7 @@
 
     <properties>
         <java.version>25</java.version>
-        <caffeine.version>3.1.8</caffeine.version>
+        <caffeine.version>3.3.1</caffeine.version>
     </properties>
 
     <dependencies>
